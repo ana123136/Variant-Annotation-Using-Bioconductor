@@ -1,0 +1,545 @@
+############################################
+#title: Variant Annotation Using Bioconductor
+#author: Ana-Marija Krizanac
+#date: 2026-03-10
+############################################
+
+############################################
+# Setup for Workshop
+############################################
+
+# Install BiocManager (if not already installed)
+install.packages("BiocManager")
+
+# Check Bioconductor version
+BiocManager::version()
+
+# If needed, install a compatible version (should be 3.20–3.22)
+BiocManager::install(version = "3.22")
+
+# Install required Bioconductor packages
+BiocManager::install(c(
+  "VariantAnnotation",
+  "GenomicRanges",
+  "rtracklayer",
+  "biomaRt",
+  "GenomeInfoDb"
+))
+
+# Install required CRAN packages
+install.packages(c(
+  "dplyr",
+  "tidyr",
+  "ggplot2"
+))
+
+############################################
+# Workshop
+############################################
+
+# =====================================
+# Load required packages
+# =====================================
+library(VariantAnnotation)
+library(GenomicRanges)
+library(rtracklayer)
+library(biomaRt)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(GenomeInfoDb)
+
+# =====================================
+# Downloading and inspecting the data
+# =====================================
+
+# Load chr19:45,200,000–45,250,000 (Byrska-Bishop et al. Cell, 2022), http://ftp.1000genomes.ebi.ac.uk/vol1/ftp/data_collections/1000G_2504_high_coverage/working/20220422_3202_phased_SNV_INDEL_SV/
+# VCF file is stored in a compressed manner (vcf.gz)
+vcf_file <- "https://raw.githubusercontent.com/ana123136/Variant-Annotation-Using-Bioconductor/main/1kGP_high_coverage_Illumina.chr19.filtered_50kb.vcf.gz"
+index_file <- "https://raw.githubusercontent.com/ana123136/Variant-Annotation-Using-Bioconductor/main/1kGP_high_coverage_Illumina.chr19.filtered_50kb.vcf.gz.tbi"
+
+download.file(vcf_file, destfile = "1kGP_high_coverage_Illumina.chr19.filtered_50kb.vcf.gz", mode = "wb")
+download.file(index_file, destfile = "1kGP_high_coverage_Illumina.chr19.filtered_50kb.vcf.gz.tbi", mode = "wb")
+
+# Read the VCF
+# library(VariantAnnotation) is needed for this
+vcf <- readVcf("1kGP_high_coverage_Illumina.chr19.filtered_50kb.vcf.gz", "hg38")
+
+# Inspect file
+vcf
+info(header(vcf))
+header(vcf)
+meta(header(vcf))
+meta(header(vcf))$fileformat
+meta(header(vcf))$contig
+geno(vcf)$GT[1:2, ]
+
+# Check file class 
+class(vcf)
+
+# Extract genomic ranges (variant positions) from the VCF object
+# library(GenomicRanges) is needed for this
+gr_variants <- rowRanges(vcf)
+
+# Check file class
+class(gr_variants)
+
+# Check all available conventions for chromosome names
+# library(GenomeInfoDb) is needed for this
+styles <- genomeStyles("Homo_sapiens")
+styles[ , (ncol(styles)-3):ncol(styles)]
+
+# Check the naming convention for chromosome names in the file
+seqlevelsStyle(gr_variants)
+
+# Check the genome annotation convention from the file
+genome(gr_variants)
+
+# Setting genome annotation to correspond to Ensembl/NCBI-style name
+genome(gr_variants) <- "GRCh38"
+
+# Setting chromosomal IDs to correspond to Ensembl/NCBI-style name ("chr19" --> "19")
+seqlevelsStyle(gr_variants) <- "NCBI"
+
+# The entire file was read and not just a subset by genomic ranges, so we can ignore this column
+mcols(gr_variants)$paramRangeID <- NULL
+
+# Inspect Granges VCF object
+colnames(mcols(gr_variants))
+head(mcols(gr_variants))
+table(seqnames(gr_variants))
+range(gr_variants)
+
+# =====================================
+# Variant annotation – classification by size/type
+# =====================================
+
+# Create a list of variant types
+# library(VariantAnnotation) is needed for this
+variant_types <- list(SNV = isSNV, Insertion = isInsertion, Deletion = isDeletion)
+# isSNV: REF and ALT alleles are both a single nucleotide long
+# isInsertion: REF allele is a single nucleotide, and the ALT allele is longer than a single nucleotide
+# isDeletion: ALT allele is a single nucleotide, and the reference allele is longer than a single nucleotide
+
+# Count SNVs, Insertions, Deletions
+counts <- sapply(names(variant_types), function(type) {
+  cat("\n====================\nVariant type:", type, "\n")
+  
+  idx <- variant_types[[type]](vcf, singleAltOnly = TRUE) # TRUE --> only variants with a single alternate allele are evaluated
+  print(table(idx))
+  
+  if (any(idx)) print(rowRanges(vcf[idx])[1:min(5, sum(idx))])
+  
+  sum(idx)
+})
+
+# ---------------------------
+# Variant types plot
+# ---------------------------
+
+# Plot variant types (classification of variants by their size)
+barplot(
+  counts,
+  col = c("darkblue", "deeppink", "gray"),
+  main = "Variant Type Distribution",
+  ylab = "Number of Variants",
+  las = 2
+)
+
+# Check distribution of variant lengths
+# library(GenomicRanges) is needed for this
+w <- width(gr_variants)
+
+table(w)
+
+# Count the number of large variants
+large_variants <- gr_variants[w > 50]
+length(large_variants)
+
+# Check some of the large variants by inspecting metadata columns
+mcols(large_variants)
+
+# ID field was stored as the row names of the GRanges object, not as a metadata column
+#mcols(gr_variants)$rsid <- rownames(mcols(gr_variants))
+mcols(gr_variants)$rsid <- names(gr_variants)
+
+# Count how many times each rsID appears in gr_variants
+rsid_counts <- table(mcols(gr_variants)$rsid)
+
+# Identify multi-allelic rsIDs (rsID appears more than once)
+multi_rsid <- names(rsid_counts[rsid_counts > 1])
+
+# Number of multi-allelic rsIDs
+length(multi_rsid)
+
+# Check how many rows each multi-allelic rsID has (i.e., number of ALT alleles represented)
+multi_rsid_table <- data.frame(
+  rsID = multi_rsid,
+  n_rows = as.integer(rsid_counts[multi_rsid])
+)
+
+multi_rsid_table # multi-allelic variants in this vcf file are presented as bi-allelic, i.e., ALT alleles are separated in different rows
+
+# Check how one of the multi-allelic variants looks
+gr_variants[mcols(gr_variants)$rsid == "rs1320105362", c("REF", "ALT")]
+# format of this variant when not presented as bi-allelic: "chr19  45239590  rs1320105362  G  A,T"
+
+# =====================================
+# Variant annotation – consequence type and associated phenotype
+# =====================================
+
+# Check available databases
+# library(biomaRt) is needed for this
+listMarts(host = "https://www.ensembl.org")      
+
+# Set up a connection to the Ensembl Variation database
+snp_mart <- useMart(
+  biomart = "ENSEMBL_MART_SNP", # BioMart dedicated to SNPs
+  dataset = "hsapiens_snp",     # SNPs from Homo sapiens dataset
+  host    = "https://www.ensembl.org" # Ensembl server URL
+)
+
+# Extract unique non-missing rsIDs from the GRanges object
+# These will be used to query Ensembl for annotations
+variant_list <- unique(na.omit(mcols(gr_variants)$rsid))
+
+# Query Ensembl BioMart to retrieve functional consequences and associated phenotype descriptions for each rsID
+variant_annotations <- getBM(
+  attributes = c(           # vector of attributes we want to retrieve
+    "refsnp_id",            # rsID (dbSNP identifier)
+    "chr_name",             # chromosome name
+    "chrom_start",          # genomic start position
+    "chrom_end",            # genomic end position
+    "consequence_type_tv",  # variant consequence (transcript-based)
+    "phenotype_description" # associated phenotype(s), if available
+  ),
+  filters = "snp_filter", # filter type: filter by SNP rsID
+  values = variant_list,  # list of rsIDs to query
+  mart = snp_mart         # BioMart connection object
+)
+
+# Optional: reload previously saved annotations instead of querying BioMart
+#annotat_connection <- url("https://raw.githubusercontent.com/ana123136/Variant-Annotation-Using-Bioconductor/main/variant_annotations_backup_consequences_and_phenotypes.rds", "rb")
+#variant_annotations <- readRDS(annotat_connection)
+#close(annotat_connection)
+
+# ---------------------------
+# Variant consequences plot
+# ---------------------------
+
+# Convert empty strings "" into NA
+# library(tidyr) is needed for this
+variant_annotations <- variant_annotations %>%
+  mutate(
+    consequence_type_tv = na_if(consequence_type_tv, ""),
+    phenotype_description = na_if(phenotype_description, "")
+  )
+
+# Count consequence types
+consequence_counts <- variant_annotations %>%
+  filter(!is.na(consequence_type_tv)) %>% # keep only rows where consequence_type_tv is not missing
+  count(consequence_type_tv) %>% # counts the number of occurrences for each consequence type
+  mutate(pct = n / sum(n) * 100) # calculates the percentage of each consequence type
+
+# Create variants consequences plot
+# library(ggplot2) is needed for this
+ggplot(consequence_counts, aes(x = "", y = pct, fill = consequence_type_tv)) +
+  geom_col(width = 1) +
+  coord_polar(theta = "y") +
+  labs(title = "Variant Consequences", fill = "Consequence Type") +
+  theme_void() +
+  theme(legend.position = "right")
+
+# ---------------------------
+# Top 20 phenotypes bar plot
+# ---------------------------
+
+# Count phenotypes associated with variants
+phenotype_counts <- variant_annotations %>%
+  filter(!is.na(phenotype_description)) %>% # removes rows where phenotype_description is missing
+  count(phenotype_description) %>% # counts how many times each unique phenotype appears
+  arrange(desc(n)) %>% # sorts the table in descending order
+  slice_head(n = 20) # focus on the 20 most common phenotypes
+
+# Top 20 phenotypes bar plot
+ggplot(phenotype_counts, aes(x = reorder(phenotype_description, n), y = n, fill = phenotype_description)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  labs(title = "Top 20 Phenotypes by SNP Count", x = "Phenotype", y = "Number of SNPs") +
+  theme_minimal()
+# Phenotype descriptions come from different databases, integrating different studies (GWAS Catalog, ClinVar)
+# More than one phenotype possible for each variant
+
+# ---------------------------
+# Variant consequences & phenotypes heatmap
+# ---------------------------
+
+# Create counts for consequence-phenotype combinations
+combo_counts <- variant_annotations %>%
+  filter(!is.na(consequence_type_tv) & !is.na(phenotype_description)) %>% # filters out rows where either consequence_type_tv or phenotype_description is NA
+  count(consequence_type_tv, phenotype_description)
+
+# Keep only top 10 phenotypes
+top_phenos <- combo_counts %>%
+  group_by(phenotype_description) %>%
+  summarise(total = sum(n), .groups = "drop") %>%
+  arrange(desc(total)) %>%
+  slice_head(n = 10) %>%
+  pull(phenotype_description)
+
+# Filter original combo_counts to only top phenotypes
+combo_counts_filtered <- combo_counts %>%
+  filter(phenotype_description %in% top_phenos)
+
+# Create heatmap of variant consequences & phenotypes
+ggplot(combo_counts_filtered, aes(x = consequence_type_tv, y = phenotype_description, fill = n)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "lightpink", high = "deeppink") +
+  labs(
+    title = "Consequences vs Phenotypes",
+    x = "Variant Consequence",
+    y = "Phenotype",
+    fill = "SNP count"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 10)
+  )
+
+# =====================================
+# Variant annotation – closest genes
+# =====================================
+
+# Map variants' positions to the closest genes
+
+# Set up a connection to the Ensembl Genes database
+gene_mart <- useEnsembl(
+  biomart = "genes",
+  dataset = "hsapiens_gene_ensembl",
+  host = "https://www.ensembl.org"
+)
+
+# Query Ensembl BioMart to identify genes that overlap the genomic positions of the variants
+variant_annotations_genes <- getBM(
+  attributes = c(
+    "chromosome_name",
+    "start_position",
+    "end_position",
+    "external_gene_name",
+    "ensembl_gene_id",
+    "description",
+    "gene_biotype"
+  ),
+  filters = c("chromosome_name", "start", "end"),
+  values = list(
+    chromosome_name = variant_annotations$chr_name,
+    start = variant_annotations$chrom_start,
+    end   = variant_annotations$chrom_end
+  ),
+  mart = gene_mart
+)
+
+# Check identified genes
+head(variant_annotations_genes)
+
+# Optional: reload previously saved annotations instead of querying BioMart
+#gene_annotat_connection <- url("https://raw.githubusercontent.com/ana123136/Variant-Annotation-Using-Bioconductor/main/variant_annotations_backup_genes.rds", "rb")
+#variant_annotations_genes <- readRDS(gene_annotat_connection)
+#close(gene_annotat_connection)
+
+# ---------------------------
+# Gene and variants locations plot
+# ---------------------------
+
+# Make sure variants have a column to match genes
+variant_with_gene <- variant_annotations %>%
+  left_join(
+    variant_annotations_genes %>% 
+      select(chromosome_name, start_position, end_position, external_gene_name),
+    by = c("chr_name" = "chromosome_name")
+  ) %>%
+  filter(chrom_start >= start_position & chrom_start <= end_position)
+
+# Visualize gene locations (blue) along the genome and variants located within those genes (pink)
+ggplot() +
+  geom_segment(
+    data = variant_annotations_genes,
+    aes(
+      x = start_position,
+      xend = end_position,
+      y = external_gene_name,
+      yend = external_gene_name
+    ),
+    size = 4,
+    color = "darkblue"
+  ) +
+  geom_point(
+    data = variant_with_gene,
+    aes(
+      x = chrom_start,
+      y = external_gene_name 
+    ),
+    color = "deeppink",
+    size = 2
+  ) +
+  labs(
+    x = "Genomic Position",
+    y = "Gene",
+    title = "Gene Locations with Variants"
+  ) +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 8))
+
+# =====================================
+# Optional: Gene Enrichment Analysis
+# =====================================
+#BiocManager::install("clusterProfiler")
+#library(clusterProfiler)
+#BiocManager::install("org.Hs.eg.db")
+#library(org.Hs.eg.db)
+
+# Convert Ensembl IDs to Entrez IDs
+#entrez_ids <- bitr(variant_annotations_genes$ensembl_gene_id, fromType="ENSEMBL", toType="ENTREZID", OrgDb="org.Hs.eg.db")
+
+# GO (Gene Ontology) enrichment analysis
+#GO <- enrichGO(
+#gene = entrez_ids$ENTREZID,
+#OrgDb = org.Hs.eg.db,
+#ont = "BP",  # Biological Process
+#pAdjustMethod = "BH",
+#qvalueCutoff = 0.05,
+#readable = TRUE
+#)
+#dotplot(GO, showCategory = 10) + theme_minimal()
+
+# =====================================
+# Variant annotation – pathogenicity prediction
+# =====================================
+
+# Predicts effects of coding variants on protein function
+
+# Keep only coding variants
+# Filter coding variants using the correct column
+coding_variants <- variant_annotations %>%
+  filter(grepl("missense|stop_gained|synonymous|frameshift|splice", 
+               consequence_type_tv, ignore.case = TRUE))
+
+# Check how many coding variants have rsIDs (refsnp_id)
+sum(!is.na(coding_variants$refsnp_id))
+
+# Keep only variants with rsIDs for SIFT
+coding_rsids <- coding_variants$refsnp_id[!is.na(coding_variants$refsnp_id)]
+
+# Retrieve SIFT annotations from Ensembl
+sift_annotations <- getBM(
+  attributes = c(
+    "refsnp_id",
+    "ensembl_transcript_stable_id",   # transcript-level info
+    "sift_prediction",                # predicted effect of amino acid change
+    "sift_score"                      # probability score (0–1)
+  ),
+  filters = "snp_filter",
+  values = coding_rsids,
+  mart = snp_mart
+)
+
+# Optional: reload previously saved annotations instead of querying BioMart
+#sift_annotations_connection <- url("https://raw.githubusercontent.com/ana123136/Variant-Annotation-Using-Bioconductor/main/sift_annotations_backup.rds", "rb")
+#sift_annotations <- readRDS(sift_annotations_connection)
+#close(sift_annotations_connection)
+
+# Keep all transcript-level SIFT info
+sift_long <- sift_annotations %>%
+  filter(!is.na(sift_score) | !is.na(sift_prediction)) %>% # remove variants where no SIFT prediction is available
+  rename(transcript_id = ensembl_transcript_stable_id)  
+
+# Join with coding variants
+coding_variants_long <- coding_variants %>%
+  left_join(sift_long, by = "refsnp_id")
+
+# ---------------------------
+# Histogram of distribution of SIFT scores
+# ---------------------------
+
+# Histogram of SIFT scores
+ggplot(coding_variants_long, aes(x = sift_score)) +
+  geom_histogram(binwidth = 0.05, fill = "deeppink", color = "black") +
+  
+  # Create dummy rectangles to generate a legend
+  geom_rect(aes(xmin = 0, xmax = 0.05, ymin = 0, ymax = 0, fill = "0–0.04: Deleterious"), alpha = 0) +
+  geom_rect(aes(xmin = 0.05, xmax = 1, ymin = 0, ymax = 0, fill = "0.05–1: Tolerated"), alpha = 0) +
+  
+  scale_fill_manual(
+    name = "SIFT Score Interpretation",
+    values = c("0–0.04: Deleterious", "0.05–1: Tolerated")
+  ) +
+  
+  labs(
+    title = "Distribution of SIFT Scores",
+    x = "SIFT Score",
+    y = "Count"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "right")
+
+# ---------------------------
+# Bar chart of SIFT predictions
+# ---------------------------
+
+# Count SIFT predictions
+sift_counts <- coding_variants_long %>%
+  filter(!is.na(sift_prediction) & sift_prediction != "") %>%
+  count(sift_prediction)
+
+# Plot of SIFT predictions for coding variants
+ggplot(sift_counts, aes(x = reorder(sift_prediction, n), y = n, fill = n)) +
+  geom_col() +
+  coord_flip() +
+  scale_fill_gradient(
+    low = "#FFC0CB",   # light pink
+    high = "#FF1493",  # deep pink
+    name = "Variant Count"
+  ) +
+  labs(
+    title = "SIFT Predictions for Coding Variants",
+    x = "SIFT Prediction",
+    y = "Variant Count"
+  ) +
+  theme_minimal()
+
+#"low-confidence" indicates that prediction is uncertain due to limited alignment evidence
+
+# Check variant rs528975748, which has more than one SIFT prediction
+multiple_sift_predictions <- coding_variants_long %>% filter(refsnp_id == "rs528975748")
+print(multiple_sift_predictions)
+#https://www.ensembl.org/Homo_sapiens/Variation/Mappings?db=core;r=19:45238320-45239320;v=rs528975748;vdb=variation;vf=1026460548
+
+# =====================================
+# Variant annotation – summary
+# =====================================
+
+# Filter variants with SIFT <= 0.4 and meaningful phenotypes
+filtered_variants <- coding_variants_long %>%
+  filter(
+    !is.na(sift_score) & sift_score <= 0.4,
+    !is.na(phenotype_description),
+    phenotype_description != "",
+    phenotype_description != "ClinVar: phenotype not specified"
+  ) %>%
+  select(
+    refsnp_id,
+    consequence_type_tv,
+    phenotype_description,
+    transcript_id,
+    sift_prediction,
+    sift_score
+  )
+
+# Print the resulting table
+print(filtered_variants)
+
+# This table represents a set of potentially deleterious coding variants with meaningful phenotypic associations
+# It can be used for:
+# 1) further experimental validation
+# 2) exploring links between coding changes and complex traits or diseases
