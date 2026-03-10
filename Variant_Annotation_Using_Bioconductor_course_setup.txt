@@ -1,0 +1,40 @@
+############################################
+# R / Bioconductor Setup for Workshop
+############################################
+
+# Install BiocManager (if not already installed)
+install.packages("BiocManager")
+
+# Check Bioconductor version
+BiocManager::version()
+
+# If needed, install a compatible version (should be 3.20–3.22)
+BiocManager::install(version = "3.22")
+
+# Install required Bioconductor packages
+BiocManager::install(c(
+  "VariantAnnotation",
+  "GenomicRanges",
+  "rtracklayer",
+  "biomaRt",
+  "GenomeInfoDb"
+))
+
+# Install required CRAN packages
+install.packages(c(
+  "dplyr",
+  "tidyr",
+  "ggplot2"
+))
+
+# Test loading packages
+library(VariantAnnotation)
+library(GenomicRanges)
+library(rtracklayer)
+library(biomaRt)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(GenomeInfoDb)
+
+############################################
